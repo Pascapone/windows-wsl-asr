@@ -339,6 +339,9 @@ pub fn run() {
             context
                 .backend_manager
                 .spawn_health_poller(app_handle.clone(), context.state.clone());
+            if let Some(window) = app_handle.get_webview_window("main") {
+                let _ = window.hide();
+            }
             tauri::async_runtime::block_on(async {
                 if config.backend.auto_start_backend {
                     let _ = context

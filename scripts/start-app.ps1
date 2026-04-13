@@ -6,6 +6,11 @@ $tauriDir = Join-Path $windowsTrayDir 'src-tauri'
 $distIndex = Join-Path $windowsTrayDir 'dist\index.html'
 $exePath = Join-Path $tauriDir 'target\debug\pibo-local-asr-tray.exe'
 
+if (Get-Process pibo-local-asr-tray -ErrorAction SilentlyContinue) {
+    Write-Host '[start-app] app is already running'
+    exit 0
+}
+
 if (-not (Test-Path (Join-Path $windowsTrayDir 'node_modules'))) {
     Write-Host '[start-app] installing npm dependencies...'
     Push-Location $windowsTrayDir

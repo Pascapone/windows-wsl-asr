@@ -14,7 +14,7 @@
         "title": "Pibo Local ASR Tray",
         "width": 1120,
         "height": 900,
-        "visible": true,
+        "visible": false,
         "resizable": true,
         "decorations": true
       }
