@@ -1,0 +1,31 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Pibo Local ASR Tray",
+  "version": "0.1.0",
+  "identifier": "com.pibo.local-asr-tray",
+  "build": {
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Pibo Local ASR Tray",
+        "width": 1120,
+        "height": 900,
+        "visible": true,
+        "resizable": true,
+        "decorations": true
+      }
+    ],
+    "withGlobalTauri": true,
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false,
+    "targets": "all"
+  }
+}

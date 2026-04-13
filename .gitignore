@@ -1,0 +1,28 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+
+# Local scratch
+/image.png
+
+# Node / frontend
+node_modules/
+dist/
+
+# Rust / Tauri
+target/
+apps/windows-tray/src-tauri/target/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Logs
+*.log
+
+# Env / local config
+.env
+.env.*
