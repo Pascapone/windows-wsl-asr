@@ -6,6 +6,7 @@ mod logging;
 
 mod audio {
     pub mod capture;
+    pub mod processing;
     pub mod resample;
 }
 

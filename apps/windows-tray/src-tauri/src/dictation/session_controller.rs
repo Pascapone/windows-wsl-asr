@@ -58,7 +58,9 @@ impl SessionController {
         let config = snapshot.config.clone();
         if snapshot.backend_status != BackendStatus::Ready {
             if !config.backend.auto_start_backend {
-                return Err(anyhow!("Backend is not ready. Start it first or enable auto-start."));
+                return Err(anyhow!(
+                    "Backend is not ready. Start it first or enable auto-start."
+                ));
             }
 
             state
@@ -83,13 +85,13 @@ impl SessionController {
         let dictionary_context = current.config.dictionary_context();
         let language_hint = current.config.dictation.language_hint.clone();
         let session_id = backend_client
-            .start_session(
-                dictionary_context.clone(),
-                language_hint.clone(),
-            )
+            .start_session(dictionary_context.clone(), language_hint.clone())
             .await
             .context("failed to start backend session")?;
-        let (capture, mut receiver) = start_capture(current.config.capture.input_device_id.as_deref())?;
+        let (capture, mut receiver) = start_capture(
+            current.config.capture.input_device_id.as_deref(),
+            current.config.audio_processing.clone(),
+        )?;
         let send_client = backend_client.clone();
         let send_state = state.clone();
         let send_app = app.clone();
@@ -107,6 +109,17 @@ impl SessionController {
             while let Some(chunk) = receiver.recv().await {
                 total_chunk_index += 1;
                 segment_chunk_index += 1;
+                let samples = chunk.samples;
+                let metrics = chunk.metrics;
+
+                if let Some(metrics) = metrics.clone() {
+                    send_state
+                        .update(|snapshot| {
+                            snapshot.audio_metrics = Some(metrics);
+                        })
+                        .await;
+                    let _ = emit_snapshot(&send_app, &send_state).await;
+                }
 
                 let (session_id, segment_index, committed_text) = {
                     let live = send_live.lock().await;
@@ -118,7 +131,7 @@ impl SessionController {
                 };
 
                 let request_started_at = Instant::now();
-                let response = match send_client.push_chunk(&session_id, &chunk).await {
+                let response = match send_client.push_chunk(&session_id, &samples).await {
                     Ok(response) => response,
                     Err(error) => {
                         let error = error.context(format!(
@@ -143,7 +156,7 @@ impl SessionController {
                     segment_index,
                     total_chunk_index,
                     segment_chunk_index,
-                    chunk.len(),
+                    samples.len(),
                     request_ms,
                     response.processing_ms,
                     response.audio_seconds,
@@ -154,6 +167,9 @@ impl SessionController {
                     .update(|snapshot| {
                         snapshot.partial_text = combined_partial.clone();
                         snapshot.dictation_status = DictationStatus::Recording;
+                        if let Some(metrics) = metrics.clone() {
+                            snapshot.audio_metrics = Some(metrics);
+                        }
                         snapshot.error_message = None;
                     })
                     .await;
@@ -178,8 +194,9 @@ impl SessionController {
                     let finish_response = match send_client.finish_session(&session_id).await {
                         Ok(response) => response,
                         Err(error) => {
-                            let error =
-                                error.context(format!("failed to finalize rollover session {session_id}"));
+                            let error = error.context(format!(
+                                "failed to finalize rollover session {session_id}"
+                            ));
                             send_state
                                 .update(|snapshot| {
                                     snapshot.dictation_status = DictationStatus::Error;
@@ -205,21 +222,23 @@ impl SessionController {
                         .await;
                     emit_snapshot(&send_app, &send_state).await?;
 
-                    let new_session_id =
-                        match send_client.start_session(dictionary_context.clone(), language_hint.clone()).await {
-                            Ok(session_id) => session_id,
-                            Err(error) => {
-                                let error = error.context("failed to start rollover backend session");
-                                send_state
-                                    .update(|snapshot| {
-                                        snapshot.dictation_status = DictationStatus::Error;
-                                        snapshot.error_message = Some(error.to_string());
-                                    })
-                                    .await;
-                                let _ = emit_snapshot(&send_app, &send_state).await;
-                                return Err(error);
-                            }
-                        };
+                    let new_session_id = match send_client
+                        .start_session(dictionary_context.clone(), language_hint.clone())
+                        .await
+                    {
+                        Ok(session_id) => session_id,
+                        Err(error) => {
+                            let error = error.context("failed to start rollover backend session");
+                            send_state
+                                .update(|snapshot| {
+                                    snapshot.dictation_status = DictationStatus::Error;
+                                    snapshot.error_message = Some(error.to_string());
+                                })
+                                .await;
+                            let _ = emit_snapshot(&send_app, &send_state).await;
+                            return Err(error);
+                        }
+                    };
                     {
                         let mut live = send_live.lock().await;
                         live.session_id = new_session_id.clone();
@@ -246,6 +265,7 @@ impl SessionController {
         state
             .update(|snapshot| {
                 snapshot.partial_text.clear();
+                snapshot.audio_metrics = None;
                 snapshot.dictation_status = DictationStatus::Recording;
                 snapshot.error_message = None;
             })
@@ -257,7 +277,11 @@ impl SessionController {
         Ok(())
     }
 
-    pub async fn stop_recording(&self, app: &tauri::AppHandle, state: &StateStore) -> anyhow::Result<()> {
+    pub async fn stop_recording(
+        &self,
+        app: &tauri::AppHandle,
+        state: &StateStore,
+    ) -> anyhow::Result<()> {
         let active = self
             .active
             .lock()
@@ -280,7 +304,9 @@ impl SessionController {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         if !active.send_task.is_finished() {
-            log::warn!("audio send task did not finish promptly after stop; aborting remaining work");
+            log::warn!(
+                "audio send task did not finish promptly after stop; aborting remaining work"
+            );
             active.send_task.abort();
         }
         let mut send_task_error = None;
@@ -317,8 +343,12 @@ impl SessionController {
                     copy_text(&final_text)?;
                     last_transcript = Some(final_text.clone());
                     if snapshot.config.dictation.auto_paste {
-                        let outcome = paste_text(&final_text, snapshot.config.dictation.restore_clipboard)?;
-                        log::info!("Paste completed, clipboard restored: {}", outcome.clipboard_restored);
+                        let outcome =
+                            paste_text(&final_text, snapshot.config.dictation.restore_clipboard)?;
+                        log::info!(
+                            "Paste completed, clipboard restored: {}",
+                            outcome.clipboard_restored
+                        );
                     }
                 }
             }
@@ -342,6 +372,9 @@ impl SessionController {
                 } else {
                     String::new()
                 };
+                if !has_error {
+                    snapshot.audio_metrics = None;
+                }
                 snapshot.dictation_status = if has_error {
                     DictationStatus::Error
                 } else {
@@ -362,7 +395,11 @@ impl SessionController {
         Ok(())
     }
 
-    pub async fn cancel_recording(&self, app: &tauri::AppHandle, state: &StateStore) -> anyhow::Result<()> {
+    pub async fn cancel_recording(
+        &self,
+        app: &tauri::AppHandle,
+        state: &StateStore,
+    ) -> anyhow::Result<()> {
         let active = self.active.lock().await.take();
         if let Some(active) = active {
             active.capture.stop();
@@ -377,6 +414,7 @@ impl SessionController {
         state
             .update(|snapshot| {
                 snapshot.partial_text.clear();
+                snapshot.audio_metrics = None;
                 snapshot.dictation_status = DictationStatus::Idle;
                 snapshot.error_message = None;
             })
@@ -436,7 +474,10 @@ fn append_transcript(target: &mut String, addition: &str) {
         && addition
             .chars()
             .next()
-            .map(|ch| !ch.is_whitespace() && !matches!(ch, '.' | ',' | '!' | '?' | ':' | ';' | ')' | ']' | '}'))
+            .map(|ch| {
+                !ch.is_whitespace()
+                    && !matches!(ch, '.' | ',' | '!' | '?' | ':' | ';' | ')' | ']' | '}')
+            })
             .unwrap_or(false);
 
     if needs_space {

@@ -18,6 +18,26 @@ export type AppConfig = {
     hotkey: string
     inputDeviceId: string | null
   }
+  audioProcessing: {
+    highPassEnabled: boolean
+    autoGainEnabled: boolean
+    compressorEnabled: boolean
+    outputGainEnabled: boolean
+    limiterEnabled: boolean
+    meteringEnabled: boolean
+    highPassCutoffHz: number
+    targetRmsDb: number
+    autoGainMinDb: number
+    autoGainMaxDb: number
+    autoGainAttackMs: number
+    autoGainReleaseMs: number
+    compressorThresholdDb: number
+    compressorRatio: number
+    compressorAttackMs: number
+    compressorReleaseMs: number
+    outputGainDb: number
+    limiterCeilingDb: number
+  }
   overlay: {
     enabled: boolean
     anchor: 'mouse' | 'center'
@@ -41,6 +61,17 @@ export type AppSnapshot = {
   dictationStatus: DictationStatus
   backendOwned: boolean
   backendModelLoaded: boolean
+  audioMetrics: {
+    inputRmsDb: number
+    outputRmsDb: number
+    inputPeakDb: number
+    outputPeakDb: number
+    currentGainDb: number
+    gainReductionDb: number
+    clipCount: number
+    limitCount: number
+    droppedChunks: number
+  } | null
   partialText: string
   lastTranscript: string | null
   errorMessage: string | null

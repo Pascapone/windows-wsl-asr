@@ -17,6 +17,21 @@ if (-not (Test-Path (Join-Path $windowsTrayDir 'node_modules'))) {
     }
 }
 
+$latestFrontendSource = Get-ChildItem $windowsTrayDir -Recurse -File |
+    Where-Object {
+        $_.FullName -notlike (Join-Path $windowsTrayDir 'node_modules\*') -and
+        $_.FullName -notlike (Join-Path $windowsTrayDir 'dist\*') -and
+        $_.FullName -notlike (Join-Path $tauriDir '*') -and
+        ($_.Extension -in '.ts', '.tsx', '.css', '.html', '.json')
+    } |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 1
+
+$needsFrontendBuild = -not (Test-Path $distIndex)
+if (-not $needsFrontendBuild -and $latestFrontendSource) {
+    $needsFrontendBuild = $latestFrontendSource.LastWriteTime -gt (Get-Item $distIndex).LastWriteTime
+}
+
 $needsRustBuild = -not (Test-Path $exePath)
 if (-not $needsRustBuild) {
     $exeTimestamp = (Get-Item $exePath).LastWriteTime
@@ -29,25 +44,31 @@ if (-not $needsRustBuild) {
         Select-Object -First 1
 
     $needsRustBuild = $latestTauriSource -and $latestTauriSource.LastWriteTime -gt $exeTimestamp
+    if (-not $needsRustBuild -and (Test-Path $distIndex)) {
+        $needsRustBuild = (Get-Item $distIndex).LastWriteTime -gt $exeTimestamp
+    }
 }
 
-if ($needsRustBuild) {
+if ($needsFrontendBuild -or $needsRustBuild) {
     if (Get-Process pibo-local-asr-tray -ErrorAction SilentlyContinue) {
         Write-Host '[start-app] app is already running; close it before rebuilding'
         exit 0
     }
+}
 
-    if (-not (Test-Path $distIndex)) {
-        Write-Host '[start-app] building frontend bundle...'
-        Push-Location $windowsTrayDir
-        try {
-            npm run build
-        }
-        finally {
-            Pop-Location
-        }
+if ($needsFrontendBuild) {
+    Write-Host '[start-app] building frontend bundle...'
+    Push-Location $windowsTrayDir
+    try {
+        npm run build
     }
+    finally {
+        Pop-Location
+    }
+    $needsRustBuild = $true
+}
 
+if ($needsRustBuild) {
     Write-Host '[start-app] building debug app...'
     Push-Location $tauriDir
     try {

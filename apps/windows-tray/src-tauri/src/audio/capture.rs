@@ -8,7 +8,12 @@ use cpal::{
 use serde::Serialize;
 use tokio::sync::mpsc::{self, error::TrySendError};
 
-use super::resample::LinearResampler;
+use crate::config::AudioProcessingConfig;
+
+use super::{
+    processing::{AudioProcessingMetrics, AudioProcessor},
+    resample::LinearResampler,
+};
 
 const TARGET_RATE: u32 = 16_000;
 const TARGET_CHUNK_SAMPLES: usize = 3_200;
@@ -22,6 +27,12 @@ pub struct AudioDeviceInfo {
     pub is_default: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct AudioChunk {
+    pub samples: Vec<f32>,
+    pub metrics: Option<AudioProcessingMetrics>,
+}
+
 pub struct AudioCaptureHandle {
     _stream: Stream,
 }
@@ -33,16 +44,23 @@ impl AudioCaptureHandle {
 struct ChunkPipeline {
     channels: usize,
     resampler: LinearResampler,
+    processor: AudioProcessor,
     pending: Vec<f32>,
-    sender: mpsc::Sender<Vec<f32>>,
+    sender: mpsc::Sender<AudioChunk>,
     dropped_chunks: usize,
 }
 
 impl ChunkPipeline {
-    fn new(sample_rate: u32, channels: usize, sender: mpsc::Sender<Vec<f32>>) -> Self {
+    fn new(
+        sample_rate: u32,
+        channels: usize,
+        processing_config: AudioProcessingConfig,
+        sender: mpsc::Sender<AudioChunk>,
+    ) -> Self {
         Self {
             channels,
             resampler: LinearResampler::new(sample_rate, TARGET_RATE),
+            processor: AudioProcessor::new(processing_config),
             pending: Vec::new(),
             sender,
             dropped_chunks: 0,
@@ -60,7 +78,9 @@ impl ChunkPipeline {
     }
 
     fn push_u16(&mut self, data: &[u16]) {
-        let mono = downmix_to_mono(data, self.channels, |sample| (sample as f32 / 65535.0) * 2.0 - 1.0);
+        let mono = downmix_to_mono(data, self.channels, |sample| {
+            (sample as f32 / 65535.0) * 2.0 - 1.0
+        });
         self.flush_mono(&mono);
     }
 
@@ -72,7 +92,14 @@ impl ChunkPipeline {
 
         self.pending.extend(resampled);
         while self.pending.len() >= TARGET_CHUNK_SAMPLES {
-            let chunk = self.pending.drain(..TARGET_CHUNK_SAMPLES).collect::<Vec<_>>();
+            let mut samples = self
+                .pending
+                .drain(..TARGET_CHUNK_SAMPLES)
+                .collect::<Vec<_>>();
+            let metrics = self
+                .processor
+                .process(&mut samples, self.dropped_chunks as u64);
+            let chunk = AudioChunk { samples, metrics };
             match self.sender.try_send(chunk) {
                 Ok(()) => {}
                 Err(TrySendError::Full(_chunk)) => {
@@ -114,12 +141,19 @@ fn host() -> cpal::Host {
 
 fn enumerate_devices() -> anyhow::Result<Vec<(String, Device, bool)>> {
     let host = host();
-    let default_name = host.default_input_device().and_then(|device| device.name().ok());
+    let default_name = host
+        .default_input_device()
+        .and_then(|device| device.name().ok());
     let mut items = Vec::new();
     for (index, device) in host.input_devices()?.enumerate() {
-        let name = device.name().unwrap_or_else(|_| format!("Input {}", index + 1));
+        let name = device
+            .name()
+            .unwrap_or_else(|_| format!("Input {}", index + 1));
         let id = format!("{index}:{name}");
-        let is_default = default_name.as_ref().map(|value| value == &name).unwrap_or(false);
+        let is_default = default_name
+            .as_ref()
+            .map(|value| value == &name)
+            .unwrap_or(false);
         items.push((id, device, is_default));
     }
     Ok(items)
@@ -151,14 +185,22 @@ fn resolve_device(device_id: Option<&str>) -> anyhow::Result<Device> {
 
 pub fn start_capture(
     device_id: Option<&str>,
-) -> anyhow::Result<(AudioCaptureHandle, mpsc::Receiver<Vec<f32>>)> {
+    processing_config: AudioProcessingConfig,
+) -> anyhow::Result<(AudioCaptureHandle, mpsc::Receiver<AudioChunk>)> {
     let device = resolve_device(device_id)?;
-    let supported = device.default_input_config().context("failed to query input config")?;
+    let supported = device
+        .default_input_config()
+        .context("failed to query input config")?;
     let config: StreamConfig = supported.clone().into();
     let channels = config.channels as usize;
     let sample_rate = config.sample_rate.0;
     let (sender, receiver) = mpsc::channel(AUDIO_QUEUE_CAPACITY);
-    let pipeline = Arc::new(Mutex::new(ChunkPipeline::new(sample_rate, channels, sender)));
+    let pipeline = Arc::new(Mutex::new(ChunkPipeline::new(
+        sample_rate,
+        channels,
+        processing_config,
+        sender,
+    )));
     let error_callback = |error| {
         log::error!("Audio capture error: {error}");
     };

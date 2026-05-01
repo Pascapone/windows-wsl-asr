@@ -3,7 +3,7 @@ use std::{path::PathBuf, sync::Arc};
 use serde::Serialize;
 use tokio::sync::Mutex;
 
-use crate::config::AppConfig;
+use crate::{audio::processing::AudioProcessingMetrics, config::AppConfig};
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -33,6 +33,7 @@ pub struct AppSnapshot {
     pub dictation_status: DictationStatus,
     pub backend_owned: bool,
     pub backend_model_loaded: bool,
+    pub audio_metrics: Option<AudioProcessingMetrics>,
     pub partial_text: String,
     pub last_transcript: Option<String>,
     pub error_message: Option<String>,
@@ -46,6 +47,7 @@ impl AppSnapshot {
             dictation_status: DictationStatus::Idle,
             backend_owned: false,
             backend_model_loaded: false,
+            audio_metrics: None,
             partial_text: String::new(),
             last_transcript: None,
             error_message: None,
