@@ -9,11 +9,32 @@ pub fn init_logging(path: &Path) -> anyhow::Result<()> {
     }
 
     let config = ConfigBuilder::new().set_time_format_rfc3339().build();
-    let file = fs::File::create(path).with_context(|| format!("failed to open {}", path.display()))?;
-    let loggers: Vec<Box<dyn SharedLogger>> = vec![
-        SimpleLogger::new(LevelFilter::Info, config.clone()),
-        WriteLogger::new(LevelFilter::Info, config, file),
-    ];
+    let mut loggers: Vec<Box<dyn SharedLogger>> = vec![SimpleLogger::new(LevelFilter::Info, config.clone())];
+    if let Some(file) = open_log_file(path)? {
+        loggers.push(WriteLogger::new(LevelFilter::Info, config, file));
+    }
     let _ = CombinedLogger::init(loggers);
     Ok(())
+}
+
+fn open_log_file(path: &Path) -> anyhow::Result<Option<fs::File>> {
+    match fs::OpenOptions::new().create(true).append(true).open(path) {
+        Ok(file) => Ok(Some(file)),
+        Err(primary_error) => {
+            let fallback = path.with_file_name(format!("app-{}.log", std::process::id()));
+            match fs::OpenOptions::new().create(true).append(true).open(&fallback) {
+                Ok(file) => Ok(Some(file)),
+                Err(fallback_error) => {
+                    eprintln!(
+                        "failed to open log files {} ({}) and {} ({})",
+                        path.display(),
+                        primary_error,
+                        fallback.display(),
+                        fallback_error
+                    );
+                    Ok(None)
+                }
+            }
+        }
+    }
 }

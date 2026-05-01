@@ -83,6 +83,20 @@ impl AppContext {
         Ok(snapshot)
     }
 
+    async fn reload_config(&self, app: &AppHandle) -> anyhow::Result<AppSnapshot> {
+        let (config, _) = AppConfig::load_or_create()?;
+        hotkey::register_hotkey(app, &config.capture.hotkey)?;
+        let snapshot = self
+            .state
+            .update(|snapshot| {
+                snapshot.config = config.clone();
+                snapshot.error_message = None;
+            })
+            .await;
+        emit_snapshot(app, &self.state).await?;
+        Ok(snapshot)
+    }
+
     async fn start_backend(&self, app: &AppHandle) -> anyhow::Result<()> {
         self.backend_manager.start(app, &self.state).await
     }
@@ -140,6 +154,11 @@ async fn get_snapshot(context: State<'_, AppContext>) -> Result<AppSnapshot, Str
 #[tauri::command]
 async fn save_config(app: AppHandle, context: State<'_, AppContext>, config: AppConfig) -> Result<AppSnapshot, String> {
     context.save_config(&app, config).await.map_err(err_to_string)
+}
+
+#[tauri::command]
+async fn reload_config(app: AppHandle, context: State<'_, AppContext>) -> Result<AppSnapshot, String> {
+    context.reload_config(&app).await.map_err(err_to_string)
 }
 
 #[tauri::command]
@@ -318,6 +337,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_snapshot,
             save_config,
+            reload_config,
             list_input_devices,
             refresh_audio_devices,
             start_backend,

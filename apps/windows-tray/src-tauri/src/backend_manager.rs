@@ -17,6 +17,9 @@ use tokio::{
     time::sleep,
 };
 
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 use crate::{
     app_state::{BackendStatus, DictationStatus, StateStore},
     dictation::backend_client::BackendClient,
@@ -98,6 +101,7 @@ impl BackendManager {
             .args(["-d", &config.backend.wsl_distro, "--cd", &wsl_backend_dir, "bash", "-lc", &command_line])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        hide_console_window(&mut command);
 
         let mut child = command.spawn().context("failed to launch backend via wsl.exe")?;
         log::info!("spawned backend bridge pid={:?}", child.id());
@@ -130,11 +134,13 @@ impl BackendManager {
 
         let snapshot = state.snapshot().await;
         let cleanup_cmd = "pkill -f 'uvicorn app.server:app' || true";
-        let _ = Command::new("wsl.exe")
+        let mut cleanup = Command::new("wsl.exe");
+        cleanup
             .args(["-d", &snapshot.config.backend.wsl_distro, "bash", "-lc", cleanup_cmd])
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
+            .stderr(Stdio::null());
+        hide_console_window(&mut cleanup);
+        let _ = cleanup.spawn();
 
         state
             .update(|snapshot| {
@@ -324,6 +330,14 @@ where
         log::info!("[{source}] {line}");
     }
 }
+
+#[cfg(windows)]
+fn hide_console_window(command: &mut Command) {
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn hide_console_window(_command: &mut Command) {}
 
 fn backend_dir() -> anyhow::Result<PathBuf> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   cancelRecording,
   getSnapshot,
   listInputDevices,
   openConfig,
   openLogs,
+  reloadConfig,
   refreshAudioDevices,
   restartBackend,
   saveConfig,
@@ -26,13 +27,32 @@ function cloneConfig(config: AppConfig): AppConfig {
 
 export function SettingsPage({ snapshot }: { snapshot: AppSnapshot | null }) {
   const [draft, setDraft] = useState<AppConfig | null>(null)
+  const [dictionaryText, setDictionaryText] = useState('')
+  const [baseConfigJson, setBaseConfigJson] = useState<string | null>(null)
   const [devices, setDevices] = useState<AudioDeviceInfo[]>([])
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
+  const draftRef = useRef<AppConfig | null>(null)
+  const baseConfigJsonRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    draftRef.current = draft
+  }, [draft])
+
+  useEffect(() => {
+    baseConfigJsonRef.current = baseConfigJson
+  }, [baseConfigJson])
 
   useEffect(() => {
     if (snapshot?.config) {
-      setDraft(cloneConfig(snapshot.config))
+      const incomingJson = JSON.stringify(snapshot.config)
+      const currentDraft = draftRef.current
+      const hasLocalEdits = currentDraft && baseConfigJsonRef.current !== JSON.stringify(currentDraft)
+      if (!currentDraft || !hasLocalEdits) {
+        setDraft(cloneConfig(snapshot.config))
+        setDictionaryText(snapshot.config.dictionary.terms.join('\n'))
+        setBaseConfigJson(incomingJson)
+      }
     }
   }, [snapshot])
 
@@ -44,14 +64,19 @@ export function SettingsPage({ snapshot }: { snapshot: AppSnapshot | null }) {
     void loadDevices()
   }, [])
 
-  const dictionaryValue = useMemo(() => (draft?.dictionary.terms ?? []).join('\n'), [draft?.dictionary.terms])
+  const parseDictionaryTerms = (value: string) =>
+    value
+      .split('\n')
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+
   const dictionaryCount = draft?.dictionary.terms.length ?? 0
   const hasUnsavedChanges = useMemo(() => {
-    if (!snapshot || !draft) {
+    if (!baseConfigJson || !draft) {
       return false
     }
-    return JSON.stringify(snapshot.config) !== JSON.stringify(draft)
-  }, [draft, snapshot])
+    return baseConfigJson !== JSON.stringify(draft)
+  }, [baseConfigJson, draft])
   const startupMessage = useMemo(() => {
     if (!snapshot) {
       return 'Lokalen App-State laden...'
@@ -85,9 +110,12 @@ export function SettingsPage({ snapshot }: { snapshot: AppSnapshot | null }) {
     setSaving(true)
     setMessage(null)
     try {
-      await saveConfig(draft)
-      const nextSnapshot = await getSnapshot()
+      const normalizedDraft = cloneConfig(draft)
+      normalizedDraft.dictionary.terms = parseDictionaryTerms(dictionaryText)
+      const nextSnapshot = await saveConfig(normalizedDraft)
       setDraft(cloneConfig(nextSnapshot.config))
+      setDictionaryText(nextSnapshot.config.dictionary.terms.join('\n'))
+      setBaseConfigJson(JSON.stringify(nextSnapshot.config))
       setMessage('Konfiguration gespeichert.')
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Konfiguration konnte nicht gespeichert werden.')
@@ -100,10 +128,14 @@ export function SettingsPage({ snapshot }: { snapshot: AppSnapshot | null }) {
     setSaving(true)
     setMessage(null)
     try {
-      await saveConfig(draft)
+      const normalizedDraft = cloneConfig(draft)
+      normalizedDraft.dictionary.terms = parseDictionaryTerms(dictionaryText)
+      await saveConfig(normalizedDraft)
       await restartBackend()
       const nextSnapshot = await getSnapshot()
       setDraft(cloneConfig(nextSnapshot.config))
+      setDictionaryText(nextSnapshot.config.dictionary.terms.join('\n'))
+      setBaseConfigJson(JSON.stringify(nextSnapshot.config))
       setMessage('Dictionary gespeichert und Backend neu gestartet.')
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Dictionary konnte nicht gespeichert werden.')
@@ -117,65 +149,51 @@ export function SettingsPage({ snapshot }: { snapshot: AppSnapshot | null }) {
     setDevices(await listInputDevices())
   }
 
+  const reloadConfigFromDisk = async () => {
+    setSaving(true)
+    setMessage(null)
+    try {
+      const nextSnapshot = await reloadConfig()
+      setDraft(cloneConfig(nextSnapshot.config))
+      setDictionaryText(nextSnapshot.config.dictionary.terms.join('\n'))
+      setBaseConfigJson(JSON.stringify(nextSnapshot.config))
+      setMessage('Konfiguration aus JSON neu geladen.')
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Konfiguration konnte nicht neu geladen werden.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const updateDictionaryText = (value: string) => {
+    setDictionaryText(value)
+    patchConfig((config) => {
+      config.dictionary.terms = parseDictionaryTerms(value)
+    })
+  }
+
   return (
     <main className="shell">
-      <header className="hero">
+      <header className="app-header">
         <div>
           <p className="eyebrow">Pibo Local ASR Tray</p>
-          <h1>Lokales Diktat auf Windows, WSL und NVIDIA.</h1>
-          <p className="lede">
-            Push-to-talk, partielles Overlay, finale lokale Transkripte und direkte Einfuegung in die aktive App.
-          </p>
+          <h1>Lokales Diktat</h1>
+          <p className="lede">{startupMessage}</p>
         </div>
-        <div className="hero-actions">
+        <div className="header-actions">
           <button onClick={() => void startRecording()} disabled={snapshot.backendStatus !== 'ready'}>
             Start Recording
           </button>
           <button onClick={() => void stopRecording()} disabled={snapshot.dictationStatus !== 'recording'}>
             Stop Recording
           </button>
-          <button onClick={() => void cancelRecording()} disabled={snapshot.dictationStatus === 'idle'}>
+          <button className="secondary" onClick={() => void cancelRecording()} disabled={snapshot.dictationStatus === 'idle'}>
             Cancel
           </button>
         </div>
       </header>
 
       <section className="grid">
-        <article className="panel quickstart-panel">
-          <div className="backend-header">
-            <div>
-              <p className="eyebrow">Quick Start</p>
-              <h2>App starten und Dictionary pflegen</h2>
-            </div>
-            <span className={`status-pill status-${snapshot.dictationStatus}`}>{snapshot.dictationStatus}</span>
-          </div>
-          <p className="muted">
-            Hotkey: <strong>{draft.capture.hotkey}</strong>
-            {' | '}
-            Fallback: <strong>Rollen</strong>
-            {' | '}
-            Dictionary-Eintraege: <strong>{dictionaryCount}</strong>
-          </p>
-          <div className={`startup-banner startup-${snapshot.backendStatus}`}>{startupMessage}</div>
-          <div className="button-row">
-            <button onClick={() => void startBackend()} disabled={snapshot.backendStatus === 'ready' || snapshot.backendStatus === 'starting'}>
-              Backend Starten
-            </button>
-            <button onClick={() => void startRecording()} disabled={snapshot.backendStatus !== 'ready'}>
-              Aufnahme Starten
-            </button>
-            <button className="secondary" onClick={() => void openConfig()}>
-              Config Oeffnen
-            </button>
-            <button className="secondary" onClick={() => void openLogs()}>
-              Logs Oeffnen
-            </button>
-          </div>
-          <p className="hint">
-            Fuer normale Nutzung: App starten, Modell laden lassen und erst bei ready mit dem Hotkey aufnehmen.
-          </p>
-        </article>
-
         <BackendStatusCard
           snapshot={snapshot}
           onStart={() => void startBackend()}
@@ -184,7 +202,23 @@ export function SettingsPage({ snapshot }: { snapshot: AppSnapshot | null }) {
           onOpenLogs={() => void openLogs()}
         />
 
-        <article className="panel">
+        <article className="panel status-panel">
+          <div className="status-line">
+            <span>Hotkey</span>
+            <strong>{draft.capture.hotkey}</strong>
+          </div>
+          <div className="status-line">
+            <span>Dictionary</span>
+            <strong>{dictionaryCount} Eintraege</strong>
+          </div>
+          <div className="status-line">
+            <span>Dictation</span>
+            <strong>{snapshot.dictationStatus}</strong>
+          </div>
+          {snapshot.errorMessage ? <p className="error-line">{snapshot.errorMessage}</p> : null}
+        </article>
+
+        <article className="panel compact-panel">
           <h2>General</h2>
           <ToggleField
             label="Launch backend automatically"
@@ -198,7 +232,7 @@ export function SettingsPage({ snapshot }: { snapshot: AppSnapshot | null }) {
           />
         </article>
 
-        <article className="panel">
+        <article className="panel compact-panel">
           <h2>Input</h2>
           <DeviceSelect
             devices={devices}
@@ -208,7 +242,7 @@ export function SettingsPage({ snapshot }: { snapshot: AppSnapshot | null }) {
           />
         </article>
 
-        <article className="panel">
+        <article className="panel compact-panel">
           <h2>Hotkey</h2>
           <HotkeyField
             value={draft.capture.hotkey}
@@ -297,33 +331,27 @@ export function SettingsPage({ snapshot }: { snapshot: AppSnapshot | null }) {
         </article>
 
         <article className="panel span-2 dictionary-panel">
-          <h2>Dictionary</h2>
-          <p className="muted">
-            Ein Begriff pro Zeile. Das Dictionary wird beim Start jeder Session als lokaler Kontext an das Backend
-            uebergeben.
-          </p>
+          <div className="section-heading">
+            <div>
+              <h2>Dictionary</h2>
+              <p className="muted">Ein Begriff pro Zeile. Gespeicherte Aenderungen gelten fuer neue Aufnahmen.</p>
+            </div>
+            <span className="hint">{hasUnsavedChanges ? 'ungespeichert' : 'gespeichert'}</span>
+          </div>
           <DictionaryEditor
-            value={dictionaryValue}
-            onChange={(value) => patchConfig((config) => {
-              config.dictionary.terms = value
-                .split('\n')
-                .map((entry) => entry.trim())
-                .filter(Boolean)
-            })}
+            value={dictionaryText}
+            onChange={updateDictionaryText}
           />
           <div className="dictionary-toolbar">
             <span className="hint">
               {dictionaryCount} Eintraege{hasUnsavedChanges ? ' | ungespeicherte Aenderungen' : ''}
             </span>
             <div className="button-row">
-              <button className="secondary" onClick={() => void openConfig()}>
-                Config in Notepad
-              </button>
               <button onClick={() => void persist()} disabled={saving}>
-                Dictionary Speichern
+                Speichern
               </button>
               <button onClick={() => void persistDictionaryAndRestart()} disabled={saving}>
-                Speichern + Backend Neustarten
+                Speichern + Backend neu starten
               </button>
             </div>
           </div>
@@ -339,13 +367,16 @@ export function SettingsPage({ snapshot }: { snapshot: AppSnapshot | null }) {
         </div>
         <div className="footer-actions">
           <button className="secondary" onClick={() => void openConfig()}>
-            Open Config
+            JSON oeffnen
+          </button>
+          <button className="secondary" onClick={() => void reloadConfigFromDisk()} disabled={saving}>
+            JSON neu laden
           </button>
           <button className="secondary" onClick={() => void openLogs()}>
-            Open Logs
+            Logs
           </button>
           <button onClick={() => void persist()} disabled={saving}>
-            {saving ? 'Saving...' : 'Save Settings'}
+            {saving ? 'Speichern...' : 'Einstellungen speichern'}
           </button>
         </div>
       </footer>

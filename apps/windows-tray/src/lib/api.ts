@@ -13,6 +13,10 @@ export function saveConfig(config: AppConfig) {
   return invoke<AppSnapshot>('save_config', { config })
 }
 
+export function reloadConfig() {
+  return invoke<AppSnapshot>('reload_config')
+}
+
 export function startBackend() {
   return invoke<void>('start_backend')
 }
