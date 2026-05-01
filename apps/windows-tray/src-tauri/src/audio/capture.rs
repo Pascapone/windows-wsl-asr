@@ -11,7 +11,7 @@ use tokio::sync::mpsc::{self, error::TrySendError};
 use crate::config::AudioProcessingConfig;
 
 use super::{
-    processing::{AudioProcessingMetrics, AudioProcessor},
+    processing::{measure_level, AudioProcessingMetrics, AudioProcessor},
     resample::LinearResampler,
 };
 
@@ -31,6 +31,8 @@ pub struct AudioDeviceInfo {
 pub struct AudioChunk {
     pub samples: Vec<f32>,
     pub metrics: Option<AudioProcessingMetrics>,
+    pub input_rms_db: f32,
+    pub input_peak_db: f32,
 }
 
 pub struct AudioCaptureHandle {
@@ -96,10 +98,16 @@ impl ChunkPipeline {
                 .pending
                 .drain(..TARGET_CHUNK_SAMPLES)
                 .collect::<Vec<_>>();
+            let input_level = measure_level(&samples);
             let metrics = self
                 .processor
                 .process(&mut samples, self.dropped_chunks as u64);
-            let chunk = AudioChunk { samples, metrics };
+            let chunk = AudioChunk {
+                samples,
+                metrics,
+                input_rms_db: input_level.rms_db,
+                input_peak_db: input_level.peak_db,
+            };
             match self.sender.try_send(chunk) {
                 Ok(()) => {}
                 Err(TrySendError::Full(_chunk)) => {

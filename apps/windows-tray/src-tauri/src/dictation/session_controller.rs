@@ -10,6 +10,7 @@ use crate::{
     app_state::{BackendStatus, DictationStatus, StateStore},
     audio::capture::{start_capture, AudioCaptureHandle},
     backend_manager::BackendManager,
+    config::AudioProcessingConfig,
     dictation::{
         backend_client::BackendClient,
         paste::{copy_text, paste_text},
@@ -26,6 +27,72 @@ struct LiveSessionState {
     session_id: String,
     committed_text: String,
     segment_index: usize,
+    session_had_speech: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SilenceDecision {
+    should_send: bool,
+    is_speech: bool,
+}
+
+#[derive(Debug, Clone)]
+struct SilenceGate {
+    enabled: bool,
+    rms_threshold_db: f32,
+    peak_threshold_db: f32,
+    tail_chunks: usize,
+    has_seen_speech: bool,
+    silent_chunks_after_speech: usize,
+    suppressed_chunks: u64,
+}
+
+impl SilenceGate {
+    fn new(config: &AudioProcessingConfig) -> Self {
+        Self {
+            enabled: config.silence_gate_enabled,
+            rms_threshold_db: config.silence_rms_threshold_db,
+            peak_threshold_db: config.silence_peak_threshold_db,
+            tail_chunks: config.silence_tail_chunks.min(10) as usize,
+            has_seen_speech: false,
+            silent_chunks_after_speech: 0,
+            suppressed_chunks: 0,
+        }
+    }
+
+    fn decide(&mut self, input_rms_db: f32, input_peak_db: f32) -> SilenceDecision {
+        if !self.enabled {
+            return SilenceDecision {
+                should_send: true,
+                is_speech: true,
+            };
+        }
+
+        let is_speech =
+            input_rms_db >= self.rms_threshold_db || input_peak_db >= self.peak_threshold_db;
+        if is_speech {
+            self.has_seen_speech = true;
+            self.silent_chunks_after_speech = 0;
+            return SilenceDecision {
+                should_send: true,
+                is_speech: true,
+            };
+        }
+
+        if self.has_seen_speech && self.silent_chunks_after_speech < self.tail_chunks {
+            self.silent_chunks_after_speech += 1;
+            return SilenceDecision {
+                should_send: true,
+                is_speech: false,
+            };
+        }
+
+        self.suppressed_chunks = self.suppressed_chunks.saturating_add(1);
+        SilenceDecision {
+            should_send: false,
+            is_speech: false,
+        }
+    }
 }
 
 struct ActiveSession {
@@ -84,6 +151,7 @@ impl SessionController {
         let backend_client = BackendClient::new(&current.config.backend);
         let dictionary_context = current.config.dictionary_context();
         let language_hint = current.config.dictation.language_hint.clone();
+        let audio_processing_config = current.config.audio_processing.clone();
         let session_id = backend_client
             .start_session(dictionary_context.clone(), language_hint.clone())
             .await
@@ -99,16 +167,21 @@ impl SessionController {
             session_id: session_id.clone(),
             committed_text: String::new(),
             segment_index: 0,
+            session_had_speech: false,
         }));
         let send_live = Arc::clone(&live);
         let send_task = tokio::spawn(async move {
+            let mut captured_chunk_index = 0usize;
             let mut total_chunk_index = 0usize;
             let mut segment_chunk_index = 0usize;
             let mut segment_started_at = Instant::now();
+            let mut silence_gate = SilenceGate::new(&audio_processing_config);
 
             while let Some(chunk) = receiver.recv().await {
-                total_chunk_index += 1;
-                segment_chunk_index += 1;
+                captured_chunk_index += 1;
+                let input_rms_db = chunk.input_rms_db;
+                let input_peak_db = chunk.input_peak_db;
+                let decision = silence_gate.decide(input_rms_db, input_peak_db);
                 let samples = chunk.samples;
                 let metrics = chunk.metrics;
 
@@ -121,8 +194,29 @@ impl SessionController {
                     let _ = emit_snapshot(&send_app, &send_state).await;
                 }
 
+                if !decision.should_send {
+                    if silence_gate.suppressed_chunks == 1
+                        || silence_gate.suppressed_chunks % 20 == 0
+                    {
+                        log::info!(
+                            "silence gate suppressed chunk captured={} suppressed={} input_rms_db={:.1} input_peak_db={:.1}",
+                            captured_chunk_index,
+                            silence_gate.suppressed_chunks,
+                            input_rms_db,
+                            input_peak_db,
+                        );
+                    }
+                    continue;
+                }
+
+                total_chunk_index += 1;
+                segment_chunk_index += 1;
+
                 let (session_id, segment_index, committed_text) = {
-                    let live = send_live.lock().await;
+                    let mut live = send_live.lock().await;
+                    if decision.is_speech {
+                        live.session_had_speech = true;
+                    }
                     (
                         live.session_id.clone(),
                         live.segment_index,
@@ -242,6 +336,7 @@ impl SessionController {
                     {
                         let mut live = send_live.lock().await;
                         live.session_id = new_session_id.clone();
+                        live.session_had_speech = false;
                     }
                     log::info!(
                         "rollover complete old_session={} new_session={} next_segment={}",
@@ -325,38 +420,61 @@ impl SessionController {
 
         let snapshot = state.snapshot().await;
         let client = BackendClient::new(&snapshot.config.backend);
-        let (session_id, mut final_text) = {
+        let (session_id, mut final_text, session_had_speech) = {
             let live = active.live.lock().await;
-            (live.session_id.clone(), live.committed_text.clone())
+            (
+                live.session_id.clone(),
+                live.committed_text.clone(),
+                live.session_had_speech,
+            )
         };
-        let finish_result = client
-            .finish_session(&session_id)
-            .await
-            .with_context(|| format!("failed to finish backend session {session_id}"));
 
         let mut last_transcript = snapshot.last_transcript.clone();
         let mut error_message = send_task_error;
-        match finish_result {
-            Ok(response) => {
-                append_transcript(&mut final_text, &response.text);
-                if !final_text.trim().is_empty() {
-                    copy_text(&final_text)?;
-                    last_transcript = Some(final_text.clone());
-                    if snapshot.config.dictation.auto_paste {
-                        let outcome =
-                            paste_text(&final_text, snapshot.config.dictation.restore_clipboard)?;
-                        log::info!(
-                            "Paste completed, clipboard restored: {}",
-                            outcome.clipboard_restored
-                        );
+        if session_had_speech {
+            let finish_result = client
+                .finish_session(&session_id)
+                .await
+                .with_context(|| format!("failed to finish backend session {session_id}"));
+
+            match finish_result {
+                Ok(response) => {
+                    append_transcript(&mut final_text, &response.text);
+                    if !final_text.trim().is_empty() {
+                        copy_text(&final_text)?;
+                        last_transcript = Some(final_text.clone());
+                        if snapshot.config.dictation.auto_paste {
+                            let outcome = paste_text(
+                                &final_text,
+                                snapshot.config.dictation.restore_clipboard,
+                            )?;
+                            log::info!(
+                                "Paste completed, clipboard restored: {}",
+                                outcome.clipboard_restored
+                            );
+                        }
+                    }
+                }
+                Err(error) => {
+                    if error_message.is_none() {
+                        error_message = Some(error.to_string());
+                    } else {
+                        log::error!("finish session also failed: {error:#}");
                     }
                 }
             }
-            Err(error) => {
-                if error_message.is_none() {
-                    error_message = Some(error.to_string());
-                } else {
-                    log::error!("finish session also failed: {error:#}");
+        } else {
+            let _ = client.cancel_session(&session_id).await;
+            if !final_text.trim().is_empty() {
+                copy_text(&final_text)?;
+                last_transcript = Some(final_text.clone());
+                if snapshot.config.dictation.auto_paste {
+                    let outcome =
+                        paste_text(&final_text, snapshot.config.dictation.restore_clipboard)?;
+                    log::info!(
+                        "Paste completed without finalizing silent session, clipboard restored: {}",
+                        outcome.clipboard_restored
+                    );
                 }
             }
         }
@@ -484,4 +602,47 @@ fn append_transcript(target: &mut String, addition: &str) {
         target.push(' ');
     }
     target.push_str(addition);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn silence_gate_suppresses_initial_silence() {
+        let config = AudioProcessingConfig::default();
+        let mut gate = SilenceGate::new(&config);
+
+        let decision = gate.decide(-80.0, -70.0);
+
+        assert!(!decision.should_send);
+        assert!(!decision.is_speech);
+    }
+
+    #[test]
+    fn silence_gate_allows_speech_and_one_tail_chunk() {
+        let config = AudioProcessingConfig::default();
+        let mut gate = SilenceGate::new(&config);
+
+        assert!(gate.decide(-28.0, -18.0).should_send);
+
+        let tail = gate.decide(-80.0, -70.0);
+        assert!(tail.should_send);
+        assert!(!tail.is_speech);
+
+        let suppressed = gate.decide(-80.0, -70.0);
+        assert!(!suppressed.should_send);
+    }
+
+    #[test]
+    fn disabled_silence_gate_passes_everything_through() {
+        let mut config = AudioProcessingConfig::default();
+        config.silence_gate_enabled = false;
+        let mut gate = SilenceGate::new(&config);
+
+        let decision = gate.decide(-80.0, -70.0);
+
+        assert!(decision.should_send);
+        assert!(decision.is_speech);
+    }
 }
