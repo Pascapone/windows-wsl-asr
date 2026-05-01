@@ -37,8 +37,6 @@ pub struct AudioProcessingConfig {
     pub output_gain_enabled: bool,
     pub limiter_enabled: bool,
     pub metering_enabled: bool,
-    #[serde(default = "default_true")]
-    pub silence_gate_enabled: bool,
     pub high_pass_cutoff_hz: f32,
     pub target_rms_db: f32,
     pub auto_gain_min_db: f32,
@@ -51,12 +49,6 @@ pub struct AudioProcessingConfig {
     pub compressor_release_ms: f32,
     pub output_gain_db: f32,
     pub limiter_ceiling_db: f32,
-    #[serde(default = "default_silence_rms_threshold_db")]
-    pub silence_rms_threshold_db: f32,
-    #[serde(default = "default_silence_peak_threshold_db")]
-    pub silence_peak_threshold_db: f32,
-    #[serde(default = "default_silence_tail_chunks")]
-    pub silence_tail_chunks: u32,
 }
 
 impl Default for AudioProcessingConfig {
@@ -68,7 +60,6 @@ impl Default for AudioProcessingConfig {
             output_gain_enabled: true,
             limiter_enabled: true,
             metering_enabled: true,
-            silence_gate_enabled: default_true(),
             high_pass_cutoff_hz: 80.0,
             target_rms_db: -20.0,
             auto_gain_min_db: -6.0,
@@ -81,27 +72,8 @@ impl Default for AudioProcessingConfig {
             compressor_release_ms: 180.0,
             output_gain_db: 0.0,
             limiter_ceiling_db: -1.0,
-            silence_rms_threshold_db: default_silence_rms_threshold_db(),
-            silence_peak_threshold_db: default_silence_peak_threshold_db(),
-            silence_tail_chunks: default_silence_tail_chunks(),
         }
     }
-}
-
-fn default_true() -> bool {
-    true
-}
-
-fn default_silence_rms_threshold_db() -> f32 {
-    -55.0
-}
-
-fn default_silence_peak_threshold_db() -> f32 {
-    -43.0
-}
-
-fn default_silence_tail_chunks() -> u32 {
-    1
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -227,16 +199,6 @@ impl AppConfig {
                 config.overlay.max_width = 420;
                 changed = true;
             }
-            if (config.audio_processing.silence_rms_threshold_db - -52.0).abs() < f32::EPSILON {
-                config.audio_processing.silence_rms_threshold_db =
-                    default_silence_rms_threshold_db();
-                changed = true;
-            }
-            if (config.audio_processing.silence_peak_threshold_db - -40.0).abs() < f32::EPSILON {
-                config.audio_processing.silence_peak_threshold_db =
-                    default_silence_peak_threshold_db();
-                changed = true;
-            }
             if changed {
                 config.save_to(&path)?;
             }
@@ -320,13 +282,9 @@ mod tests {
         assert!(config.audio_processing.output_gain_enabled);
         assert!(config.audio_processing.limiter_enabled);
         assert!(config.audio_processing.metering_enabled);
-        assert!(config.audio_processing.silence_gate_enabled);
         assert_eq!(config.audio_processing.high_pass_cutoff_hz, 80.0);
         assert_eq!(config.audio_processing.target_rms_db, -20.0);
         assert_eq!(config.audio_processing.limiter_ceiling_db, -1.0);
-        assert_eq!(config.audio_processing.silence_rms_threshold_db, -55.0);
-        assert_eq!(config.audio_processing.silence_peak_threshold_db, -43.0);
-        assert_eq!(config.audio_processing.silence_tail_chunks, 1);
     }
 
     #[test]
@@ -336,7 +294,6 @@ mod tests {
         config.audio_processing.high_pass_enabled = false;
         config.audio_processing.target_rms_db = -24.5;
         config.audio_processing.output_gain_db = 2.0;
-        config.audio_processing.silence_rms_threshold_db = -48.0;
 
         let path = std::env::temp_dir().join(format!(
             "pibo-audio-processing-config-{}.json",
@@ -351,6 +308,5 @@ mod tests {
         assert!(!reloaded.audio_processing.high_pass_enabled);
         assert_eq!(reloaded.audio_processing.target_rms_db, -24.5);
         assert_eq!(reloaded.audio_processing.output_gain_db, 2.0);
-        assert_eq!(reloaded.audio_processing.silence_rms_threshold_db, -48.0);
     }
 }

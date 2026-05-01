@@ -396,11 +396,6 @@ export function SettingsPage({ snapshot }: { snapshot: AppSnapshot | null }) {
                 checked={draft.audioProcessing.meteringEnabled}
                 onChange={(value) => patchConfig((config) => { config.audioProcessing.meteringEnabled = value })}
               />
-              <ToggleField
-                label="Silence gate"
-                checked={draft.audioProcessing.silenceGateEnabled}
-                onChange={(value) => patchConfig((config) => { config.audioProcessing.silenceGateEnabled = value })}
-              />
             </div>
 
             <div className="audio-params">
@@ -530,39 +525,6 @@ export function SettingsPage({ snapshot }: { snapshot: AppSnapshot | null }) {
                   step="0.5"
                   value={draft.audioProcessing.limiterCeilingDb}
                   onChange={(event) => patchConfig((config) => { config.audioProcessing.limiterCeilingDb = Number(event.target.value) || -1 })}
-                />
-              </label>
-              <label>
-                <span>Silence RMS dB</span>
-                <input
-                  type="number"
-                  min="-90"
-                  max="-20"
-                  step="1"
-                  value={draft.audioProcessing.silenceRmsThresholdDb}
-                  onChange={(event) => patchConfig((config) => { config.audioProcessing.silenceRmsThresholdDb = Number(event.target.value) || -55 })}
-                />
-              </label>
-              <label>
-                <span>Silence peak dB</span>
-                <input
-                  type="number"
-                  min="-90"
-                  max="-10"
-                  step="1"
-                  value={draft.audioProcessing.silencePeakThresholdDb}
-                  onChange={(event) => patchConfig((config) => { config.audioProcessing.silencePeakThresholdDb = Number(event.target.value) || -43 })}
-                />
-              </label>
-              <label>
-                <span>Silence tail chunks</span>
-                <input
-                  type="number"
-                  min="0"
-                  max="10"
-                  step="1"
-                  value={draft.audioProcessing.silenceTailChunks}
-                  onChange={(event) => patchConfig((config) => { config.audioProcessing.silenceTailChunks = Number(event.target.value) || 0 })}
                 />
               </label>
             </div>

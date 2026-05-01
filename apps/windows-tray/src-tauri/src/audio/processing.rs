@@ -19,12 +19,6 @@ pub struct AudioProcessingMetrics {
     pub dropped_chunks: u64,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct AudioLevel {
-    pub rms_db: f32,
-    pub peak_db: f32,
-}
-
 #[derive(Debug, Clone)]
 pub struct AudioProcessor {
     config: AudioProcessingConfig,
@@ -34,11 +28,6 @@ pub struct AudioProcessor {
     compressor_gain_db: f32,
     total_clip_count: u64,
     total_limit_count: u64,
-}
-
-pub fn measure_level(samples: &[f32]) -> AudioLevel {
-    let (rms_db, peak_db) = signal_stats(samples);
-    AudioLevel { rms_db, peak_db }
 }
 
 impl AudioProcessor {

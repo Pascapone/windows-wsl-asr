@@ -31,19 +31,16 @@ function OverlayView({ snapshot }: { snapshot: AppSnapshot | null }) {
     return () => window.clearTimeout(timeout)
   }, [copyState])
 
-  const liveText = snapshot?.partialText?.trim()
-  const idleText = snapshot?.lastTranscript?.trim()
   const displayText =
-    liveText ||
-    (snapshot?.dictationStatus === 'recording'
-      ? 'Sprich nach dem Druecken des Hotkeys. Partials erscheinen hier.'
-      : snapshot?.dictationStatus === 'finalizing'
-        ? 'Finalisiere lokales Transkript...'
-        : snapshot?.dictationStatus === 'backend_starting'
-          ? 'Backend startet in WSL...'
-          : snapshot?.dictationStatus === 'error'
-            ? 'Das Backend hat angehalten. Der letzte sichtbare Text bleibt hier zum Sichern erhalten.'
-            : idleText || 'Sprich nach dem Druecken des Hotkeys. Partials erscheinen hier.')
+    snapshot?.partialText?.trim() ||
+    snapshot?.lastTranscript?.trim() ||
+    (snapshot?.dictationStatus === 'finalizing'
+      ? 'Finalisiere lokales Transkript...'
+      : snapshot?.dictationStatus === 'backend_starting'
+        ? 'Backend startet in WSL...'
+        : snapshot?.dictationStatus === 'error'
+          ? 'Das Backend hat angehalten. Der letzte sichtbare Text bleibt hier zum Sichern erhalten.'
+          : 'Sprich nach dem Druecken des Hotkeys. Partials erscheinen hier.')
 
   const canCopy = Boolean(snapshot?.partialText?.trim() || snapshot?.lastTranscript?.trim())
 

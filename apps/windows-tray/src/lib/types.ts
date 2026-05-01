@@ -25,7 +25,6 @@ export type AppConfig = {
     outputGainEnabled: boolean
     limiterEnabled: boolean
     meteringEnabled: boolean
-    silenceGateEnabled: boolean
     highPassCutoffHz: number
     targetRmsDb: number
     autoGainMinDb: number
@@ -38,9 +37,6 @@ export type AppConfig = {
     compressorReleaseMs: number
     outputGainDb: number
     limiterCeilingDb: number
-    silenceRmsThresholdDb: number
-    silencePeakThresholdDb: number
-    silenceTailChunks: number
   }
   overlay: {
     enabled: boolean
